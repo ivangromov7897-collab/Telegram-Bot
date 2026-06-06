@@ -6,9 +6,7 @@ import {
   invalidateWalletCache, invalidateLookupCache,
   type WalletAssets,
 } from "./ton";
-import {
-  formatWalletAssets, formatNFTSearchResult, formatOtherNfts, paginateFullList,
-} from "./format";
+import { formatWalletAssets, formatNFTSearchResult, paginateFullList } from "./format";
 import { saveSession, getSession } from "./sessions";
 
 const TELEGRAM_TOKEN = process.env["TELEGRAM_BOT_TOKEN"] ?? "";
@@ -17,17 +15,8 @@ const MAX_SHOWN = 20;
 function tvWallet(addr: string) { return `https://tonviewer.com/${addr}`; }
 function tvNFT(addr: string)    { return `https://tonviewer.com/${addr}`; }
 
-function walletKeyboard(wallet: string, assets: WalletAssets): InlineKeyboardMarkup {
-  const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
-
-  const rid = saveSession({ type: "w", wallet });
-  rows.push([
-    { text: "🔄 Обновить",  callback_data: `r:${rid}` },
-    { text: "🌐 Tonviewer", url: tvWallet(wallet) },
-  ]);
-
+function extraListButtons(wallet: string, assets: WalletAssets): { text: string; callback_data: string }[] {
   const extras: { text: string; callback_data: string }[] = [];
-
   if (assets.usernames.length > MAX_SHOWN) {
     const fid = saveSession({ type: "fl", wallet, listTitle: "👤 Все юзернеймы", listItems: assets.usernames });
     extras.push({ text: `👤 Все юзернеймы (${assets.usernames.length})`, callback_data: `f:${fid}` });
@@ -40,15 +29,18 @@ function walletKeyboard(wallet: string, assets: WalletAssets): InlineKeyboardMar
     const fid = saveSession({ type: "fl", wallet, listTitle: "🌐 Все домены .ton", listItems: assets.domains });
     extras.push({ text: `🌐 Все домены (${assets.domains.length})`, callback_data: `f:${fid}` });
   }
-  if (assets.otherNfts.length > 0) {
-    const oid = saveSession({ type: "w", wallet, query: "other" });
-    extras.push({ text: `🖼 Другие NFT (${assets.otherNfts.length})`, callback_data: `o:${oid}` });
-  }
+  return extras;
+}
 
-  for (let i = 0; i < extras.length; i += 2) {
-    rows.push(extras.slice(i, i + 2));
-  }
-
+function walletKeyboard(wallet: string, assets: WalletAssets): InlineKeyboardMarkup {
+  const rid = saveSession({ type: "w", wallet });
+  const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
+  rows.push([
+    { text: "🔄 Обновить",  callback_data: `r:${rid}` },
+    { text: "🌐 Tonviewer", url: tvWallet(wallet) },
+  ]);
+  const extras = extraListButtons(wallet, assets);
+  for (let i = 0; i < extras.length; i += 2) rows.push(extras.slice(i, i + 2));
   return { inline_keyboard: rows };
 }
 
@@ -68,32 +60,11 @@ function lookupKeyboard(
     { text: "🌐 NFT",      url: tvNFT(nftAddress) },
   ]);
   rows.push([
-    { text: "💼 Кошелёк владельца", callback_data: `r:${wid}` },
+    { text: "💼 Кошелёк владельца", callback_data: `w:${wid}` },
     { text: "👁 Tonviewer",         url: tvWallet(ownerWallet) },
   ]);
-
-  const extras: { text: string; callback_data: string }[] = [];
-  if (assets.usernames.length > MAX_SHOWN) {
-    const fid = saveSession({ type: "fl", wallet: ownerWallet, listTitle: "👤 Все юзернеймы", listItems: assets.usernames });
-    extras.push({ text: `👤 Все юзернеймы (${assets.usernames.length})`, callback_data: `f:${fid}` });
-  }
-  if (assets.numbers.length > MAX_SHOWN) {
-    const fid = saveSession({ type: "fl", wallet: ownerWallet, listTitle: "📞 Все номера +888", listItems: assets.numbers });
-    extras.push({ text: `📞 Все номера (${assets.numbers.length})`, callback_data: `f:${fid}` });
-  }
-  if (assets.domains.length > MAX_SHOWN) {
-    const fid = saveSession({ type: "fl", wallet: ownerWallet, listTitle: "🌐 Все домены .ton", listItems: assets.domains });
-    extras.push({ text: `🌐 Все домены (${assets.domains.length})`, callback_data: `f:${fid}` });
-  }
-  if (assets.otherNfts.length > 0) {
-    const oid = saveSession({ type: "w", wallet: ownerWallet, query: "other" });
-    extras.push({ text: `🖼 Другие NFT (${assets.otherNfts.length})`, callback_data: `o:${oid}` });
-  }
-
-  for (let i = 0; i < extras.length; i += 2) {
-    rows.push(extras.slice(i, i + 2));
-  }
-
+  const extras = extraListButtons(ownerWallet, assets);
+  for (let i = 0; i < extras.length; i += 2) rows.push(extras.slice(i, i + 2));
   return { inline_keyboard: rows };
 }
 
@@ -119,13 +90,17 @@ export function startBot() {
   }
 
   async function editMD(chatId: number | string, msgId: number, text: string, kb?: InlineKeyboardMarkup) {
-    await bot.editMessageText(text, {
-      chat_id: chatId,
-      message_id: msgId,
-      parse_mode: "MarkdownV2",
-      disable_web_page_preview: true,
-      ...(kb ? { reply_markup: kb } : {}),
-    });
+    try {
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: msgId,
+        parse_mode: "MarkdownV2",
+        disable_web_page_preview: true,
+        ...(kb ? { reply_markup: kb } : {}),
+      });
+    } catch (e: any) {
+      if (!e?.message?.includes("message is not modified")) throw e;
+    }
   }
 
   async function plain(chatId: number | string, text: string) {
@@ -152,8 +127,7 @@ export function startBot() {
       "🔹 example.ton — домен\n\n" +
       "⚡ Кэш: кошелёк 5 мин, поиск 10 мин.\n" +
       "🔄 «Обновить» — сброс кэша и свежие данные.\n" +
-      "🖼 «Другие NFT» — SBT и коллекции без спама.\n" +
-      "📋 «Все юзернеймы/номера/домены» — полный список.",
+      "📋 «Все юзернеймы/номера/домены» — полный список (если > 20).",
     );
   });
 
@@ -232,9 +206,9 @@ export function startBot() {
     if (!chatId || !msgId) return;
 
     try {
-      const colon = data.indexOf(":");
-      const action = data.slice(0, colon);
-      const sid    = data.slice(colon + 1);
+      const colon   = data.indexOf(":");
+      const action  = data.slice(0, colon);
+      const sid     = data.slice(colon + 1);
       const session = getSession(sid);
 
       if (!session) {
@@ -242,26 +216,27 @@ export function startBot() {
         return;
       }
 
+      // Show full list in separate messages
       if (action === "f") {
+        await sendTyping(chatId);
         const pages = paginateFullList(
           session.listTitle ?? "Список",
           session.wallet ?? "",
           session.listItems ?? [],
         );
-        for (const page of pages) {
-          await replyMD(chatId, page);
-        }
+        for (const page of pages) await replyMD(chatId, page);
         return;
       }
 
-      if (action === "o") {
+      // Open wallet as NEW message (not edit)
+      if (action === "w") {
         await sendTyping(chatId);
         const assets = await getWalletAssets(session.wallet!);
-        if (assets.otherNfts.length === 0) { await plain(chatId, "Других NFT нет."); return; }
-        await replyMD(chatId, formatOtherNfts(assets));
+        await replyMD(chatId, formatWalletAssets(assets, "Активы кошелька"), walletKeyboard(session.wallet!, assets));
         return;
       }
 
+      // Refresh (edit current message)
       if (action === "r") {
         await sendTyping(chatId);
         const { type, wallet, query, nftAddress } = session;
