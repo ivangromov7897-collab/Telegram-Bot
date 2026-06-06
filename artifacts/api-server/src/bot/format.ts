@@ -1,12 +1,32 @@
-import type { WalletAssets } from "./ton";
+import type { WalletAssets, NFTItem } from "./ton";
 
 export function escapeMarkdown(text: string): string {
   return text.replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, "\\$&");
 }
 
+const MAX_PER_SECTION = 20;
+const MAX_MSG_LEN = 3800;
+
 function shortAddr(addr: string): string {
   if (addr.length > 12) return `${addr.slice(0, 6)}...${addr.slice(-6)}`;
   return addr;
+}
+
+function renderList(items: string[], limit = MAX_PER_SECTION): string[] {
+  const lines: string[] = [];
+  const show = items.slice(0, limit);
+  show.forEach(item => lines.push(`  • ${escapeMarkdown(item)}`));
+  if (items.length > limit) {
+    lines.push(`  _\\.\\.\\.и ещё ${items.length - limit}_`);
+  }
+  return lines;
+}
+
+function safeTruncate(text: string): string {
+  if (text.length <= MAX_MSG_LEN) return text;
+  const cut = text.slice(0, MAX_MSG_LEN);
+  const lastNewline = cut.lastIndexOf("\n");
+  return cut.slice(0, lastNewline > 0 ? lastNewline : MAX_MSG_LEN) + "\n_\\.\\.\\. \\(сообщение обрезано\\)_";
 }
 
 export function formatWalletAssets(assets: WalletAssets, title: string): string {
@@ -18,7 +38,7 @@ export function formatWalletAssets(assets: WalletAssets, title: string): string 
 
   if (assets.usernames.length > 0) {
     lines.push(`👤 *Юзернеймы \\(${assets.usernames.length}\\):*`);
-    assets.usernames.forEach(u => lines.push(`  • ${escapeMarkdown(u)}`));
+    lines.push(...renderList(assets.usernames));
     lines.push("");
   } else {
     lines.push("👤 _Юзернеймов нет_");
@@ -27,7 +47,7 @@ export function formatWalletAssets(assets: WalletAssets, title: string): string 
 
   if (assets.numbers.length > 0) {
     lines.push(`📞 *Номера \\+888 \\(${assets.numbers.length}\\):*`);
-    assets.numbers.forEach(n => lines.push(`  • ${escapeMarkdown(n)}`));
+    lines.push(...renderList(assets.numbers));
     lines.push("");
   } else {
     lines.push("📞 _Номеров нет_");
@@ -36,7 +56,7 @@ export function formatWalletAssets(assets: WalletAssets, title: string): string 
 
   if (assets.domains.length > 0) {
     lines.push(`🌐 *\\.ton домены \\(${assets.domains.length}\\):*`);
-    assets.domains.forEach(d => lines.push(`  • ${escapeMarkdown(d)}`));
+    lines.push(...renderList(assets.domains));
     lines.push("");
   } else {
     lines.push("🌐 _Доменов нет_");
@@ -49,7 +69,7 @@ export function formatWalletAssets(assets: WalletAssets, title: string): string 
     lines.push(`🖼 Других NFT: *${assets.otherNfts.length}*`);
   }
 
-  return lines.join("\n");
+  return safeTruncate(lines.join("\n"));
 }
 
 export function formatNFTSearchResult(
@@ -68,19 +88,19 @@ export function formatNFTSearchResult(
 
   if (assets.usernames.length > 0) {
     lines.push(`👤 *Юзернеймы \\(${assets.usernames.length}\\):*`);
-    assets.usernames.forEach(u => lines.push(`  • ${escapeMarkdown(u)}`));
+    lines.push(...renderList(assets.usernames));
     lines.push("");
   }
 
   if (assets.numbers.length > 0) {
     lines.push(`📞 *Номера \\+888 \\(${assets.numbers.length}\\):*`);
-    assets.numbers.forEach(n => lines.push(`  • ${escapeMarkdown(n)}`));
+    lines.push(...renderList(assets.numbers));
     lines.push("");
   }
 
   if (assets.domains.length > 0) {
     lines.push(`🌐 *\\.ton домены \\(${assets.domains.length}\\):*`);
-    assets.domains.forEach(d => lines.push(`  • ${escapeMarkdown(d)}`));
+    lines.push(...renderList(assets.domains));
     lines.push("");
   }
 
@@ -94,7 +114,7 @@ export function formatNFTSearchResult(
     lines.push(`🖼 Других NFT: *${assets.otherNfts.length}*`);
   }
 
-  return lines.join("\n");
+  return safeTruncate(lines.join("\n"));
 }
 
 export function formatOtherNfts(assets: WalletAssets): string {
@@ -103,13 +123,30 @@ export function formatOtherNfts(assets: WalletAssets): string {
   lines.push(`💼 \`${assets.wallet}\``);
   lines.push("");
 
-  assets.otherNfts.forEach(nft => {
+  const show = assets.otherNfts.slice(0, 30);
+  show.forEach(nft => {
     const name = nft.name
       ? escapeMarkdown(nft.name)
       : escapeMarkdown(shortAddr(nft.address));
     const col = nft.collection ? ` _${escapeMarkdown(nft.collection)}_` : "";
     lines.push(`• ${name}${col}`);
   });
+  if (assets.otherNfts.length > 30) {
+    lines.push(`_\\.\\.\\. и ещё ${assets.otherNfts.length - 30}_`);
+  }
 
-  return lines.join("\n");
+  return safeTruncate(lines.join("\n"));
+}
+
+export function formatFullList(
+  title: string,
+  wallet: string,
+  items: string[],
+): string {
+  const lines: string[] = [];
+  lines.push(`*${escapeMarkdown(title)} \\(${items.length}\\)*`);
+  lines.push(`💼 \`${wallet}\``);
+  lines.push("");
+  items.forEach(item => lines.push(`• ${escapeMarkdown(item)}`));
+  return safeTruncate(lines.join("\n"));
 }

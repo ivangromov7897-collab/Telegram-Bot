@@ -1,10 +1,12 @@
-export type SessionType = "w" | "u" | "n" | "d";
+export type SessionType = "w" | "u" | "n" | "d" | "fl";
 
 export interface Session {
   type: SessionType;
   wallet?: string;
   query?: string;
   nftAddress?: string;
+  listTitle?: string;
+  listItems?: string[];
 }
 
 const store = new Map<string, Session>();
