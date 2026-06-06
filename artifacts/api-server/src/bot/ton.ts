@@ -2,13 +2,7 @@ import axios, { type AxiosError } from "axios";
 import { logger } from "../lib/logger";
 import { walletCache, lookupCache, type LookupResult } from "./cache";
 
-const MARKETAPP_BASE = "https://api.marketapp.ws";
-const TONAPI_BASE    = "https://tonapi.io/v2";
-const API_KEY = process.env["MARKETAPP_API_KEY"] ?? "";
-
-export const COLLECTION_USERNAMES = "EQAOAdfM7qFfuAXSx0t1eLx0yLZxRfZSYKEpQ4tA2kVqkruL";
-export const COLLECTION_NUMBERS   = "EQC6H40h4CQj32FZQj4WMlK9EL0xVVmT5H5OJxU1x5sNm4Xv";
-export const COLLECTION_DNS       = "EQC3dNlesgVD8YbAazcauIrXBPfiVhMMr5YYk2in0Mtsz0Bz";
+const TONAPI_BASE = "https://tonapi.io/v2";
 
 export interface NFTItem {
   address: string;
@@ -36,28 +30,12 @@ function apiError(context: string, e: unknown): Error {
   const status = err?.response?.status;
   const body = JSON.stringify(err?.response?.data ?? "").slice(0, 300);
   logger.error({ context, status, body, msg: err?.message }, "API error");
-  if (status === 401) return new Error(`${context}: неверный API ключ (401)`);
   if (status === 404) return new Error(`${context}: не найдено (404)`);
   return new Error(`${context}: ${err?.message ?? String(e)}${status ? ` [HTTP ${status}]` : ""}`);
 }
 
-async function marketGet(path: string, params: Record<string, string | number> = {}) {
-  const url = `${MARKETAPP_BASE}${path}`;
-  logger.debug({ url, params }, "marketapp GET");
-  const res = await axios.get(url, {
-    headers: {
-      Authorization: API_KEY,
-      Accept: "application/json",
-    },
-    params,
-    timeout: 15000,
-  });
-  return res.data;
-}
-
 async function tonapiGet(path: string, params: Record<string, string | number> = {}) {
   const url = `${TONAPI_BASE}${path}`;
-  logger.debug({ url }, "tonapi GET");
   const res = await axios.get(url, {
     headers: { Accept: "application/json" },
     params,
@@ -66,22 +44,29 @@ async function tonapiGet(path: string, params: Record<string, string | number> =
   return res.data;
 }
 
-function parseNFT(item: any, fallbackOwner?: string): NFTItem {
-  const colAddr: string =
-    item.collection?.address ?? item.collection_address ?? "";
-  const name: string =
-    item.dns ??
-    item.metadata?.name ??
-    item.name ??
-    "";
-  return {
-    address: item.address ?? item.nft_address ?? "",
-    name,
-    collectionAddress: colAddr,
-    collection: item.collection?.name ?? item.collection?.metadata?.name ?? "",
-    owner: item.owner?.address ?? item.owner ?? fallbackOwner ?? "",
-    dns: item.dns ?? item.metadata?.domain ?? "",
-  };
+function classifyNFT(item: any): "username" | "number" | "domain" | "other" {
+  const dns: string = item.dns ?? item.metadata?.name ?? "";
+  if (dns.endsWith(".t.me")) return "username";
+  if (/^\+888/.test(dns)) return "number";
+  if (dns.endsWith(".ton")) return "domain";
+
+  const colName: string = (item.collection?.name ?? "").toLowerCase();
+  if (colName.includes("username") || colName.includes("telegram username")) return "username";
+  if (colName.includes("anonymous number") || colName.includes("888")) return "number";
+  if (colName.includes("ton dns") || colName.includes("dns")) return "domain";
+
+  return "other";
+}
+
+function formatNFTLabel(item: any, type: "username" | "number" | "domain" | "other"): string {
+  const dns: string = item.dns ?? item.metadata?.name ?? "";
+  if (type === "username") {
+    const name = dns.endsWith(".t.me") ? dns.slice(0, -4) : dns;
+    return "@" + name.replace(/^@/, "");
+  }
+  if (type === "number") return dns || item.metadata?.name || item.address;
+  if (type === "domain") return dns || item.metadata?.name || item.address;
+  return item.metadata?.name || item.address;
 }
 
 export async function getWalletAssets(walletAddress: string): Promise<WalletAssets> {
@@ -91,68 +76,65 @@ export async function getWalletAssets(walletAddress: string): Promise<WalletAsse
     return cached;
   }
 
-  const allNfts: NFTItem[] = [];
-  let cursor: string | undefined;
-  const limit = 100;
+  const allItems: any[] = [];
+  let offset = 0;
+  const limit = 1000;
 
   try {
     while (true) {
-      const params: Record<string, string | number> = { limit };
-      if (cursor) params.cursor = cursor;
-
-      const data = await marketGet(`/v1/nfts/owner/${encodeURIComponent(walletAddress)}/`, params);
-
-      const items: any[] = data?.items ?? data?.nfts ?? [];
-      allNfts.push(...items.map((item: any) => parseNFT(item, walletAddress)));
-
-      cursor = data?.next_cursor ?? data?.cursor ?? undefined;
-      if (!cursor || items.length < limit) break;
-      await sleep(200);
+      const data = await tonapiGet(
+        `/accounts/${encodeURIComponent(walletAddress)}/nfts`,
+        { limit, offset, indirect_ownership: "false" }
+      );
+      const items: any[] = data?.nft_items ?? [];
+      allItems.push(...items);
+      if (items.length < limit) break;
+      offset += limit;
+      await sleep(300);
     }
   } catch (e) {
     throw apiError("Ошибка получения NFT кошелька", e);
   }
 
-  const assets = categorizeNFTs(allNfts, walletAddress);
+  const usernames: string[] = [];
+  const numbers: string[] = [];
+  const domains: string[] = [];
+  const otherNfts: NFTItem[] = [];
+
+  for (const item of allItems) {
+    const type = classifyNFT(item);
+    const label = formatNFTLabel(item, type);
+    if (type === "username") {
+      usernames.push(label);
+    } else if (type === "number") {
+      numbers.push(label);
+    } else if (type === "domain") {
+      domains.push(label);
+    } else {
+      otherNfts.push({
+        address: item.address ?? "",
+        name: item.metadata?.name ?? "",
+        collection: item.collection?.name ?? "",
+        collectionAddress: item.collection?.address ?? "",
+        owner: walletAddress,
+        dns: item.dns ?? "",
+      });
+    }
+  }
+
+  const assets: WalletAssets = { wallet: walletAddress, usernames, numbers, domains, otherNfts };
   walletCache.set(walletAddress, assets);
   return assets;
 }
 
-export function categorizeNFTs(nfts: NFTItem[], wallet: string): WalletAssets {
-  const usernames: string[] = [];
-  const numbers:   string[] = [];
-  const domains:   string[] = [];
-  const otherNfts: NFTItem[] = [];
-
-  for (const nft of nfts) {
-    const col = (nft.collectionAddress ?? "").toLowerCase();
-    const label = nft.name || nft.dns || nft.address;
-
-    if (col === COLLECTION_USERNAMES.toLowerCase()) {
-      usernames.push(label);
-    } else if (col === COLLECTION_NUMBERS.toLowerCase()) {
-      numbers.push(label);
-    } else if (col === COLLECTION_DNS.toLowerCase()) {
-      domains.push(nft.dns || label);
-    } else {
-      otherNfts.push(nft);
-    }
-  }
-
-  return { wallet, usernames, numbers, domains, otherNfts };
-}
-
 async function resolveNFTByDNS(dnsName: string): Promise<{ nftAddress: string; ownerWallet: string } | null> {
   try {
-    const encoded = encodeURIComponent(dnsName);
-    const data = await tonapiGet(`/dns/${encoded}`);
+    const data = await tonapiGet(`/dns/${encodeURIComponent(dnsName)}`);
     const item = data?.item;
     if (!item) return null;
-
     const nftAddress: string = item.address ?? "";
     const ownerWallet: string = item.owner?.address ?? "";
     if (!nftAddress || !ownerWallet) return null;
-
     return { nftAddress, ownerWallet };
   } catch (e: any) {
     const status = (e as AxiosError)?.response?.status;
@@ -164,18 +146,13 @@ async function resolveNFTByDNS(dnsName: string): Promise<{ nftAddress: string; o
 export async function resolveUsername(username: string): Promise<LookupResult | null> {
   const clean = (username.startsWith("@") ? username.slice(1) : username).toLowerCase();
   const cacheKey = `username:${clean}`;
-
   if (lookupCache.has(cacheKey)) {
     logger.info({ username: clean }, "Cache HIT username");
     return lookupCache.get(cacheKey) ?? null;
   }
-
   try {
     const found = await resolveNFTByDNS(`${clean}.t.me`);
-    if (!found) {
-      lookupCache.set(cacheKey, null);
-      return null;
-    }
+    if (!found) { lookupCache.set(cacheKey, null); return null; }
     const assets = await getWalletAssets(found.ownerWallet);
     const result: LookupResult = { nftAddress: found.nftAddress, ownerWallet: found.ownerWallet, assets };
     lookupCache.set(cacheKey, result);
@@ -188,18 +165,13 @@ export async function resolveUsername(username: string): Promise<LookupResult | 
 export async function resolveNumber(number: string): Promise<LookupResult | null> {
   const clean = number.replace(/\s/g, "");
   const cacheKey = `number:${clean}`;
-
   if (lookupCache.has(cacheKey)) {
     logger.info({ number: clean }, "Cache HIT number");
     return lookupCache.get(cacheKey) ?? null;
   }
-
   try {
     const found = await resolveNFTByDNS(clean);
-    if (!found) {
-      lookupCache.set(cacheKey, null);
-      return null;
-    }
+    if (!found) { lookupCache.set(cacheKey, null); return null; }
     const assets = await getWalletAssets(found.ownerWallet);
     const result: LookupResult = { nftAddress: found.nftAddress, ownerWallet: found.ownerWallet, assets };
     lookupCache.set(cacheKey, result);
@@ -212,18 +184,13 @@ export async function resolveNumber(number: string): Promise<LookupResult | null
 export async function resolveDomain(domain: string): Promise<LookupResult | null> {
   const clean = domain.toLowerCase().endsWith(".ton") ? domain.toLowerCase() : `${domain.toLowerCase()}.ton`;
   const cacheKey = `domain:${clean}`;
-
   if (lookupCache.has(cacheKey)) {
     logger.info({ domain: clean }, "Cache HIT domain");
     return lookupCache.get(cacheKey) ?? null;
   }
-
   try {
     const found = await resolveNFTByDNS(clean);
-    if (!found) {
-      lookupCache.set(cacheKey, null);
-      return null;
-    }
+    if (!found) { lookupCache.set(cacheKey, null); return null; }
     const assets = await getWalletAssets(found.ownerWallet);
     const result: LookupResult = { nftAddress: found.nftAddress, ownerWallet: found.ownerWallet, assets };
     lookupCache.set(cacheKey, result);
