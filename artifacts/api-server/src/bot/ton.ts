@@ -224,26 +224,19 @@ export async function resolveDomain(domain: string): Promise<LookupResult | null
 }
 
 export type FragmentStatus =
-  | "on_sale"     // buy now (fixed price)
-  | "on_auction"  // active auction (bidding)
-  | "sold"        // already sold, has owner
-  | "not_found";  // no trace on Fragment
+  | "on_auction"  // active auction — converting to NFT via bidding
+  | "on_sale"     // buy now at fixed price
+  | "not_found";  // not on Fragment at all
 
 export interface FragmentInfo {
   name: string;
   status: FragmentStatus;
-  priceTon?: number;     // current price / min bid in TON
+  minBidTon?: number;    // minimum bid (auction) or fixed price (sale)
   url: string;
 }
 
-async function fragmentSearch(query: string, filter: string): Promise<any[]> {
-  const res = await axios.get(FRAGMENT_BASE, {
-    params: { method: "searchAuctions", query, filter },
-    headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
-    timeout: 10000,
-  });
-  return res.data?.auctions ?? [];
-}
+const FRAGMENT_PAGE_BASE = "https://fragment.com";
+const FRAGMENT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 export async function checkFragment(
   type: "username" | "number" | "domain",
@@ -252,43 +245,47 @@ export async function checkFragment(
   try {
     const clean = query.replace(/^@/, "").replace(/\.ton$/, "").replace(/\s/g, "");
 
-    const urlMap: Record<string, string> = {
-      username: `https://fragment.com/username/${clean}`,
-      number:   `https://fragment.com/number/${clean}`,
-      domain:   `https://fragment.com/domain/${clean}`,
+    const pathMap: Record<string, string> = {
+      username: `username/${clean}`,
+      number:   `number/${clean}`,
+      domain:   `domain/${clean}`,
     };
-    const url = urlMap[type];
+    const url  = `${FRAGMENT_PAGE_BASE}/${pathMap[type]}`;
 
-    const normalize = (s: string) => s.toLowerCase().replace(/\s/g, "");
-    const isMatch   = (a: any) => normalize(a.name ?? "") === normalize(clean);
+    const res = await axios.get(url, {
+      headers: { "User-Agent": FRAGMENT_UA, "Accept": "text/html" },
+      timeout: 12000,
+    });
+    const html: string = res.data ?? "";
 
-    // Query all relevant filters in parallel
-    const [auctionItems, saleItems, soldItems] = await Promise.all([
-      fragmentSearch(clean, "auction").catch(() => [] as any[]),
-      fragmentSearch(clean, "sale").catch(() => [] as any[]),
-      fragmentSearch(clean, "sold").catch(() => [] as any[]),
-    ]);
+    // Extract ajInit JSON from the page
+    const ajInitMatch = html.match(/ajInit\((\{[\s\S]*?\})\);/);
+    if (!ajInitMatch) return null;
 
-    const auctionMatch = auctionItems.find(isMatch);
-    const saleMatch    = saleItems.find(isMatch);
-    const soldMatch    = soldItems.find(isMatch);
+    let state: any = {};
+    try {
+      const parsed = JSON.parse(ajInitMatch[1]);
+      state = parsed?.state ?? {};
+    } catch { return null; }
 
-    const toTon = (raw: any): number | undefined =>
-      raw ? Math.round(Number(raw) / 1e9 * 100) / 100 : undefined;
-
-    if (auctionMatch) {
-      return { name: clean, status: "on_auction", priceTon: toTon(auctionMatch.price), url };
+    // auctionLastLt non-null → item exists on Fragment and is in auction
+    if (state.auctionLastLt != null) {
+      // Extract minimum bid from the bid form
+      const bidMatch = html.match(/name="bid_value"[^>]*value="(\d+(?:\.\d+)?)"/);
+      const minBidTon = bidMatch ? parseFloat(bidMatch[1]) : undefined;
+      return { name: clean, status: "on_auction", minBidTon, url };
     }
-    if (saleMatch) {
-      return { name: clean, status: "on_sale", priceTon: toTon(saleMatch.price), url };
-    }
-    if (soldMatch) {
-      return { name: clean, status: "sold", priceTon: toTon(soldMatch.price), url };
+
+    // Check for fixed-price sale (buy-now button with price)
+    const buyNowMatch = html.match(/class="[^"]*buy-btn[^"]*"[^>]*data-price="(\d+)"/);
+    if (buyNowMatch) {
+      const minBidTon = Math.round(Number(buyNowMatch[1]) / 1e9 * 100) / 100;
+      return { name: clean, status: "on_sale", minBidTon, url };
     }
 
     return { name: clean, status: "not_found", url };
   } catch (e: any) {
-    logger.warn({ msg: e?.message }, "Fragment check failed (non-critical)");
+    logger.warn({ msg: e?.message }, "Fragment HTML check failed (non-critical)");
     return null;
   }
 }

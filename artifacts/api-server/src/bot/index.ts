@@ -15,14 +15,15 @@ const MAX_SHOWN = 20;
 
 function fragmentText(fi: FragmentInfo | null): string {
   if (!fi) return "";
-  const price = fi.priceTon != null ? ` — мин. ставка ${fi.priceTon} TON` : "";
   switch (fi.status) {
-    case "on_auction":
-      return `\n\n🔨 Идёт аукцион на Fragment${price}\n🔗 ${fi.url}`;
-    case "on_sale":
-      return `\n\n💎 Продаётся на Fragment${fi.priceTon != null ? ` за ${fi.priceTon} TON` : ""}\n🔗 ${fi.url}`;
-    case "sold":
-      return `\n\n✅ Был продан на Fragment (сейчас у владельца)\n🔗 ${fi.url}`;
+    case "on_auction": {
+      const bid = fi.minBidTon != null ? ` — мин. ставка ${fi.minBidTon} TON` : "";
+      return `\n\n🔨 Идёт аукцион на Fragment${bid}\n🔗 ${fi.url}`;
+    }
+    case "on_sale": {
+      const price = fi.minBidTon != null ? ` за ${fi.minBidTon} TON` : "";
+      return `\n\n💎 Продаётся на Fragment${price}\n🔗 ${fi.url}`;
+    }
     case "not_found":
     default:
       return `\n\n🔍 Не найден на Fragment — не является NFT`;
@@ -33,11 +34,9 @@ function fragmentButton(fi: FragmentInfo | null): { text: string; url: string } 
   if (!fi) return null;
   switch (fi.status) {
     case "on_auction":
-      return { text: `🔨 Аукцион${fi.priceTon != null ? ` — ${fi.priceTon} TON` : ""}`, url: fi.url };
+      return { text: `🔨 Аукцион${fi.minBidTon != null ? ` — ${fi.minBidTon} TON` : ""}`, url: fi.url };
     case "on_sale":
-      return { text: `💎 Fragment${fi.priceTon != null ? ` — ${fi.priceTon} TON` : ""}`, url: fi.url };
-    case "sold":
-      return { text: "✅ Fragment (продан)", url: fi.url };
+      return { text: `💎 Купить${fi.minBidTon != null ? ` — ${fi.minBidTon} TON` : ""}`, url: fi.url };
     default:
       return null;
   }
