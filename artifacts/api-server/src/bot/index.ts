@@ -4,30 +4,30 @@ import {
   isTonAddress, isUsername, isNumber, isDomain,
   getWalletAssets, resolveUsername, resolveNumber, resolveDomain,
   invalidateWalletCache, invalidateLookupCache,
+  type WalletAssets,
 } from "./ton";
-import {
-  formatWalletAssets, formatNFTSearchResult, formatOtherNfts,
-} from "./format";
+import { formatWalletAssets, formatNFTSearchResult, formatOtherNfts } from "./format";
+import { saveSession, getSession } from "./sessions";
+import type { LookupResult } from "./cache";
 
 const TELEGRAM_TOKEN = process.env["TELEGRAM_BOT_TOKEN"] ?? "";
 
-function tonviewerWallet(addr: string) {
-  return `https://tonviewer.com/${addr}`;
-}
-function tonviewerNFT(addr: string) {
-  return `https://tonviewer.com/${addr}`;
-}
+function tvWallet(addr: string) { return `https://tonviewer.com/${addr}`; }
+function tvNFT(addr: string)    { return `https://tonviewer.com/${addr}`; }
 
-function walletKeyboard(wallet: string, otherCount: number): InlineKeyboardMarkup {
+function walletKeyboard(wallet: string, assets: WalletAssets): InlineKeyboardMarkup {
+  const rid  = saveSession({ type: "w", wallet });
+  const oid  = assets.otherNfts.length > 0
+    ? saveSession({ type: "w", wallet, query: "other" })
+    : null;
+
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
   rows.push([
-    { text: "🔄 Обновить", callback_data: `r:w:${wallet}` },
-    { text: "🌐 Tonviewer", url: tonviewerWallet(wallet) },
+    { text: "🔄 Обновить",   callback_data: `r:${rid}` },
+    { text: "🌐 Tonviewer",  url: tvWallet(wallet) },
   ]);
-  if (otherCount > 0) {
-    rows.push([
-      { text: `🖼 Другие NFT (${otherCount})`, callback_data: `on:w:${wallet}` },
-    ]);
+  if (oid) {
+    rows.push([{ text: `🖼 Другие NFT (${assets.otherNfts.length})`, callback_data: `o:${oid}` }]);
   }
   return { inline_keyboard: rows };
 }
@@ -39,19 +39,23 @@ function lookupKeyboard(
   nftAddress: string,
   otherCount: number,
 ): InlineKeyboardMarkup {
+  const rid  = saveSession({ type, query, wallet: ownerWallet, nftAddress });
+  const wid  = saveSession({ type: "w", wallet: ownerWallet });
+  const oid  = otherCount > 0
+    ? saveSession({ type: "w", wallet: ownerWallet, query: "other" })
+    : null;
+
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
   rows.push([
-    { text: "🔄 Обновить", callback_data: `r:${type}:${query}` },
-    { text: "🌐 NFT", url: tonviewerNFT(nftAddress) },
+    { text: "🔄 Обновить", callback_data: `r:${rid}` },
+    { text: "🌐 NFT",      url: tvNFT(nftAddress) },
   ]);
   rows.push([
-    { text: "💼 Открыть кошелёк", callback_data: `r:w:${ownerWallet}` },
-    { text: "👁 Tonviewer", url: tonviewerWallet(ownerWallet) },
+    { text: "💼 Открыть кошелёк", callback_data: `r:${wid}` },
+    { text: "👁 Tonviewer",       url: tvWallet(ownerWallet) },
   ]);
-  if (otherCount > 0) {
-    rows.push([
-      { text: `🖼 Другие NFT (${otherCount})`, callback_data: `on:w:${ownerWallet}` },
-    ]);
+  if (oid) {
+    rows.push([{ text: `🖼 Другие NFT (${otherCount})`, callback_data: `o:${oid}` }]);
   }
   return { inline_keyboard: rows };
 }
@@ -69,60 +73,49 @@ export function startBot() {
     try { await bot.sendChatAction(chatId, "typing"); } catch {}
   }
 
-  async function replyMD(
-    chatId: number | string,
-    text: string,
-    keyboard?: InlineKeyboardMarkup,
-  ) {
+  async function replyMD(chatId: number | string, text: string, kb?: InlineKeyboardMarkup) {
     await bot.sendMessage(chatId, text, {
       parse_mode: "MarkdownV2",
       disable_web_page_preview: true,
-      ...(keyboard ? { reply_markup: keyboard } : {}),
+      ...(kb ? { reply_markup: kb } : {}),
     });
   }
 
-  async function editMD(
-    chatId: number | string,
-    messageId: number,
-    text: string,
-    keyboard?: InlineKeyboardMarkup,
-  ) {
+  async function editMD(chatId: number | string, msgId: number, text: string, kb?: InlineKeyboardMarkup) {
     await bot.editMessageText(text, {
       chat_id: chatId,
-      message_id: messageId,
+      message_id: msgId,
       parse_mode: "MarkdownV2",
       disable_web_page_preview: true,
-      ...(keyboard ? { reply_markup: keyboard } : {}),
+      ...(kb ? { reply_markup: kb } : {}),
     });
   }
 
-  async function replyPlain(chatId: number | string, text: string) {
+  async function plain(chatId: number | string, text: string) {
     await bot.sendMessage(chatId, text, { disable_web_page_preview: true });
   }
 
   bot.onText(/\/start/, async (msg) => {
-    await replyPlain(
-      msg.chat.id,
-      "👋 Привет\\! Я анализирую TON кошельки и NFT активы\\.\n\n" +
+    await plain(msg.chat.id,
+      "👋 Привет! Я анализирую TON кошельки и NFT активы.\n\n" +
       "Отправь мне:\n" +
-      "• Адрес кошелька EQ\\.\\.\\. / UQ\\.\\.\\. → все юзернеймы, номера и домены\n" +
-      "• @username → владелец и все его активы\n" +
-      "• \\+888\\.\\.\\. → владелец и все его активы\n" +
-      "• example\\.ton → владелец и все его активы",
+      "• EQ... / UQ... — адрес кошелька\n" +
+      "• @username — юзернейм\n" +
+      "• +888... — анонимный номер\n" +
+      "• example.ton — домен TON",
     );
   });
 
   bot.onText(/\/help/, async (msg) => {
-    await replyPlain(
-      msg.chat.id,
+    await plain(msg.chat.id,
       "📖 Форматы запросов:\n\n" +
-      "🔹 Адрес кошелька — EQAbc... или UQAbc...\n" +
-      "🔹 Юзернейм — @example\n" +
-      "🔹 Номер — +888 1234 5678\n" +
-      "🔹 Домен — example.ton\n\n" +
+      "🔹 EQAbc... или UQAbc... — кошелёк\n" +
+      "🔹 @example — юзернейм\n" +
+      "🔹 +888 1234 5678 — номер\n" +
+      "🔹 example.ton — домен\n\n" +
       "⚡ Кэш: кошелёк 5 мин, поиск 10 мин.\n" +
-      "🔄 Кнопка «Обновить» сбрасывает кэш.\n" +
-      "🖼 Кнопка «Другие NFT» показывает SBT и коллекции без спама.",
+      "🔄 «Обновить» — сброс кэша и свежие данные.\n" +
+      "🖼 «Другие NFT» — SBT и коллекции (без спама).",
     );
   });
 
@@ -135,23 +128,19 @@ export function startBot() {
 
     try {
       if (isTonAddress(text)) {
-        await replyPlain(chatId, "🔍 Анализирую кошелёк...");
+        await plain(chatId, "🔍 Анализирую кошелёк...");
         await sendTyping(chatId);
         const assets = await getWalletAssets(text);
-        await replyMD(
-          chatId,
-          formatWalletAssets(assets, "Активы кошелька"),
-          walletKeyboard(text, assets.otherNfts.length),
-        );
+        await replyMD(chatId, formatWalletAssets(assets, "Активы кошелька"), walletKeyboard(text, assets));
         return;
       }
 
       if (isUsername(text)) {
-        await replyPlain(chatId, `🔍 Ищу ${text}...`);
+        await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
         const result = await resolveUsername(text);
-        if (!result) { await replyPlain(chatId, `❌ Юзернейм ${text} не найден.`); return; }
-        const clean = text.startsWith("@") ? text.slice(1).toLowerCase() : text.toLowerCase();
+        if (!result) { await plain(chatId, `❌ Юзернейм ${text} не найден.`); return; }
+        const clean = (text.startsWith("@") ? text.slice(1) : text).toLowerCase();
         await replyMD(
           chatId,
           formatNFTSearchResult("username", text, result.nftAddress, result.assets),
@@ -161,10 +150,10 @@ export function startBot() {
       }
 
       if (isNumber(text)) {
-        await replyPlain(chatId, `🔍 Ищу ${text}...`);
+        await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
         const result = await resolveNumber(text);
-        if (!result) { await replyPlain(chatId, `❌ Номер ${text} не найден.`); return; }
+        if (!result) { await plain(chatId, `❌ Номер ${text} не найден.`); return; }
         const clean = text.replace(/\s/g, "");
         await replyMD(
           chatId,
@@ -175,10 +164,10 @@ export function startBot() {
       }
 
       if (isDomain(text)) {
-        await replyPlain(chatId, `🔍 Резолвлю ${text}...`);
+        await plain(chatId, `🔍 Резолвлю ${text}...`);
         await sendTyping(chatId);
         const result = await resolveDomain(text);
-        if (!result) { await replyPlain(chatId, `❌ Домен ${text} не найден.`); return; }
+        if (!result) { await plain(chatId, `❌ Домен ${text} не найден.`); return; }
         const clean = text.toLowerCase().endsWith(".ton") ? text.toLowerCase() : `${text.toLowerCase()}.ton`;
         await replyMD(
           chatId,
@@ -188,36 +177,42 @@ export function startBot() {
         return;
       }
 
-      await replyPlain(chatId,
-        "❓ Не распознал формат. Отправь:\n" +
-        "• EQ... / UQ... — адрес кошелька\n" +
-        "• @username\n" +
-        "• +888 1234 5678\n" +
-        "• example.ton",
+      await plain(chatId,
+        "❓ Не распознал. Отправь:\n• EQ... — кошелёк\n• @username\n• +888...\n• example.ton",
       );
     } catch (err: any) {
-      logger.error({ err: err?.message, chatId, text }, "Bot handler error");
-      await replyPlain(chatId, `⚠️ ${err?.message ?? "Неизвестная ошибка"}. Попробуй позже.`);
+      logger.error({ err: err?.message, chatId, text }, "Message handler error");
+      await plain(chatId, `⚠️ ${err?.message ?? "Неизвестная ошибка"}. Попробуй позже.`);
     }
   });
 
-  bot.on("callback_query", async (query) => {
-    const chatId = query.message?.chat.id;
-    const messageId = query.message?.message_id;
-    const data = query.data ?? "";
-
-    await bot.answerCallbackQuery(query.id);
-
-    if (!chatId || !messageId) return;
+  bot.on("callback_query", async (cbq) => {
+    const chatId = cbq.message?.chat.id;
+    const msgId  = cbq.message?.message_id;
+    const data   = cbq.data ?? "";
 
     try {
-      const [action, type, ...rest] = data.split(":");
-      const payload = rest.join(":");
+      await bot.answerCallbackQuery(cbq.id);
+    } catch {}
 
-      if (action === "on" && type === "w") {
-        const assets = await getWalletAssets(payload);
+    if (!chatId || !msgId) return;
+
+    try {
+      const colon = data.indexOf(":");
+      const action = data.slice(0, colon);
+      const id     = data.slice(colon + 1);
+
+      const session = getSession(id);
+      if (!session) {
+        await plain(chatId, "⚠️ Сессия устарела. Отправь запрос заново.");
+        return;
+      }
+
+      if (action === "o") {
+        const wallet = session.wallet!;
+        const assets = await getWalletAssets(wallet);
         if (assets.otherNfts.length === 0) {
-          await bot.answerCallbackQuery(query.id, { text: "Других NFT нет." });
+          await plain(chatId, "Других NFT нет.");
           return;
         }
         await replyMD(chatId, formatOtherNfts(assets));
@@ -226,76 +221,57 @@ export function startBot() {
 
       if (action === "r") {
         await sendTyping(chatId);
+        const { type, wallet, query, nftAddress } = session;
 
         if (type === "w") {
-          invalidateWalletCache(payload);
-          const assets = await getWalletAssets(payload);
-          await editMD(
-            chatId, messageId,
+          invalidateWalletCache(wallet!);
+          const assets = await getWalletAssets(wallet!);
+          await editMD(chatId, msgId,
             formatWalletAssets(assets, "Активы кошелька"),
-            walletKeyboard(payload, assets.otherNfts.length),
+            walletKeyboard(wallet!, assets),
           );
           return;
         }
 
         if (type === "u") {
-          const query_key = `username:${payload}`;
-          invalidateLookupCache(query_key);
-          const result = await resolveUsername(payload);
-          if (!result) {
-            await bot.answerCallbackQuery(query.id, { text: "Юзернейм не найден." });
-            return;
-          }
-          invalidateWalletCache(result.ownerWallet);
-          const fresh = await resolveUsername(payload);
-          if (!fresh) return;
-          await editMD(
-            chatId, messageId,
-            formatNFTSearchResult("username", `@${payload}`, fresh.nftAddress, fresh.assets),
-            lookupKeyboard("u", payload, fresh.ownerWallet, fresh.nftAddress, fresh.assets.otherNfts.length),
+          invalidateLookupCache(`username:${query}`);
+          invalidateWalletCache(wallet!);
+          const result = await resolveUsername(query!);
+          if (!result) { await plain(chatId, "❌ Юзернейм не найден."); return; }
+          await editMD(chatId, msgId,
+            formatNFTSearchResult("username", `@${query}`, result.nftAddress, result.assets),
+            lookupKeyboard("u", query!, result.ownerWallet, result.nftAddress, result.assets.otherNfts.length),
           );
           return;
         }
 
         if (type === "n") {
-          invalidateLookupCache(`number:${payload}`);
-          const result = await resolveNumber(payload);
-          if (!result) {
-            await bot.answerCallbackQuery(query.id, { text: "Номер не найден." });
-            return;
-          }
-          invalidateWalletCache(result.ownerWallet);
-          const fresh = await resolveNumber(payload);
-          if (!fresh) return;
-          await editMD(
-            chatId, messageId,
-            formatNFTSearchResult("number", payload, fresh.nftAddress, fresh.assets),
-            lookupKeyboard("n", payload, fresh.ownerWallet, fresh.nftAddress, fresh.assets.otherNfts.length),
+          invalidateLookupCache(`number:${query}`);
+          invalidateWalletCache(wallet!);
+          const result = await resolveNumber(query!);
+          if (!result) { await plain(chatId, "❌ Номер не найден."); return; }
+          await editMD(chatId, msgId,
+            formatNFTSearchResult("number", query!, result.nftAddress, result.assets),
+            lookupKeyboard("n", query!, result.ownerWallet, result.nftAddress, result.assets.otherNfts.length),
           );
           return;
         }
 
         if (type === "d") {
-          invalidateLookupCache(`domain:${payload}`);
-          const result = await resolveDomain(payload);
-          if (!result) {
-            await bot.answerCallbackQuery(query.id, { text: "Домен не найден." });
-            return;
-          }
-          invalidateWalletCache(result.ownerWallet);
-          const fresh = await resolveDomain(payload);
-          if (!fresh) return;
-          await editMD(
-            chatId, messageId,
-            formatNFTSearchResult("domain", payload, fresh.nftAddress, fresh.assets),
-            lookupKeyboard("d", payload, fresh.ownerWallet, fresh.nftAddress, fresh.assets.otherNfts.length),
+          invalidateLookupCache(`domain:${query}`);
+          invalidateWalletCache(wallet!);
+          const result = await resolveDomain(query!);
+          if (!result) { await plain(chatId, "❌ Домен не найден."); return; }
+          await editMD(chatId, msgId,
+            formatNFTSearchResult("domain", query!, result.nftAddress, result.assets),
+            lookupKeyboard("d", query!, result.ownerWallet, result.nftAddress, result.assets.otherNfts.length),
           );
           return;
         }
       }
     } catch (err: any) {
       logger.error({ err: err?.message, data }, "Callback handler error");
-      await replyPlain(chatId, `⚠️ ${err?.message ?? "Ошибка"}. Попробуй позже.`);
+      await plain(chatId, `⚠️ ${err?.message ?? "Ошибка"}. Попробуй позже.`);
     }
   });
 
