@@ -24,9 +24,7 @@ export function startBot() {
   logger.info("Telegram bot started (polling)");
 
   async function sendTyping(chatId: number | string) {
-    try {
-      await bot.sendChatAction(chatId, "typing");
-    } catch {}
+    try { await bot.sendChatAction(chatId, "typing"); } catch {}
   }
 
   async function reply(chatId: number | string, text: string) {
@@ -62,7 +60,8 @@ export function startBot() {
       "🔹 Юзернейм — @example\n" +
       "🔹 Номер — +888 1234 5678\n" +
       "🔹 Домен — example.ton\n\n" +
-      "Я покажу все NFT активы: юзернеймы, +888 номера, .ton домены и другие NFT."
+      "Бот покажет все NFT активы: юзернеймы, +888 номера, .ton домены и другие NFT.\n\n" +
+      "⚡ Повторные запросы отвечают из кэша мгновенно (кэш 5–10 мин)."
     );
   });
 
@@ -89,7 +88,7 @@ export function startBot() {
         await sendTyping(chatId);
         const result = await resolveUsername(text);
         if (!result) {
-          await replyPlain(chatId, `❌ Юзернейм ${text} не найден в коллекции Telegram-имён TON.`);
+          await replyPlain(chatId, `❌ Юзернейм ${text} не найден.`);
           return;
         }
         const formatted = formatNFTSearchResult("username", text, result.nftAddress, result.assets);
@@ -102,7 +101,7 @@ export function startBot() {
         await sendTyping(chatId);
         const result = await resolveNumber(text);
         if (!result) {
-          await replyPlain(chatId, `❌ Номер ${text} не найден в коллекции +888 номеров TON.`);
+          await replyPlain(chatId, `❌ Номер ${text} не найден.`);
           return;
         }
         const formatted = formatNFTSearchResult("number", text, result.nftAddress, result.assets);
@@ -115,7 +114,7 @@ export function startBot() {
         await sendTyping(chatId);
         const result = await resolveDomain(text);
         if (!result) {
-          await replyPlain(chatId, `❌ Домен ${text} не найден или не зарегистрирован в TON DNS.`);
+          await replyPlain(chatId, `❌ Домен ${text} не найден.`);
           return;
         }
         const formatted = formatNFTSearchResult("domain", text, result.nftAddress, result.assets);
@@ -132,8 +131,8 @@ export function startBot() {
         "• Домен: example.ton"
       );
     } catch (err: any) {
-      logger.error({ err, chatId, text }, "Bot handler error");
-      await replyPlain(chatId, `⚠️ Ошибка при обработке запроса: ${err?.message ?? "неизвестная ошибка"}. Попробуй позже.`);
+      logger.error({ err: err?.message, chatId, text }, "Bot handler error");
+      await replyPlain(chatId, `⚠️ ${err?.message ?? "Неизвестная ошибка"}. Попробуй позже.`);
     }
   });
 
