@@ -138,15 +138,26 @@ export function formatOtherNfts(assets: WalletAssets): string {
   return safeTruncate(lines.join("\n"));
 }
 
-export function formatFullList(
+const ITEMS_PER_PAGE = 50;
+
+export function paginateFullList(
   title: string,
   wallet: string,
   items: string[],
-): string {
-  const lines: string[] = [];
-  lines.push(`*${escapeMarkdown(title)} \\(${items.length}\\)*`);
-  lines.push(`💼 \`${wallet}\``);
-  lines.push("");
-  items.forEach(item => lines.push(`• ${escapeMarkdown(item)}`));
-  return safeTruncate(lines.join("\n"));
+): string[] {
+  const pages: string[] = [];
+  const totalPages = Math.ceil(items.length / ITEMS_PER_PAGE);
+
+  for (let p = 0; p < totalPages; p++) {
+    const chunk = items.slice(p * ITEMS_PER_PAGE, (p + 1) * ITEMS_PER_PAGE);
+    const lines: string[] = [];
+    const pageLabel = totalPages > 1 ? ` — стр\\. ${p + 1}/${totalPages}` : "";
+    lines.push(`*${escapeMarkdown(title)} \\(${items.length}\\)${pageLabel}*`);
+    if (p === 0) lines.push(`💼 \`${wallet}\``);
+    lines.push("");
+    chunk.forEach(item => lines.push(`• ${escapeMarkdown(item)}`));
+    pages.push(lines.join("\n"));
+  }
+
+  return pages;
 }

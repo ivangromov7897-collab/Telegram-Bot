@@ -7,7 +7,7 @@ import {
   type WalletAssets,
 } from "./ton";
 import {
-  formatWalletAssets, formatNFTSearchResult, formatOtherNfts, formatFullList,
+  formatWalletAssets, formatNFTSearchResult, formatOtherNfts, paginateFullList,
 } from "./format";
 import { saveSession, getSession } from "./sessions";
 
@@ -243,8 +243,14 @@ export function startBot() {
       }
 
       if (action === "f") {
-        const text = formatFullList(session.listTitle ?? "Список", session.wallet ?? "", session.listItems ?? []);
-        await replyMD(chatId, text);
+        const pages = paginateFullList(
+          session.listTitle ?? "Список",
+          session.wallet ?? "",
+          session.listItems ?? [],
+        );
+        for (const page of pages) {
+          await replyMD(chatId, page);
+        }
         return;
       }
 
