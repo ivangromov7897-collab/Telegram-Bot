@@ -3,7 +3,7 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 
-class TTLCache<T> {
+export class TTLCache<T> {
   private store = new Map<string, CacheEntry<T>>();
 
   constructor(private ttlMs: number) {}
@@ -25,12 +25,16 @@ class TTLCache<T> {
   has(key: string): boolean {
     return this.get(key) !== undefined;
   }
+
+  delete(key: string): void {
+    this.store.delete(key);
+  }
 }
 
 import type { WalletAssets } from "./ton";
 
-const WALLET_TTL = 5 * 60 * 1000;
-const LOOKUP_TTL = 10 * 60 * 1000;
+const WALLET_TTL  = 5 * 60 * 1000;
+const LOOKUP_TTL  = 10 * 60 * 1000;
 
 export const walletCache = new TTLCache<WalletAssets>(WALLET_TTL);
 

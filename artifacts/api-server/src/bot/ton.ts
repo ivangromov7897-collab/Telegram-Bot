@@ -34,7 +34,7 @@ function apiError(context: string, e: unknown): Error {
   return new Error(`${context}: ${err?.message ?? String(e)}${status ? ` [HTTP ${status}]` : ""}`);
 }
 
-async function tonapiGet(path: string, params: Record<string, string | number> = {}) {
+async function tonapiGet(path: string, params: Record<string, string | number | boolean> = {}) {
   const url = `${TONAPI_BASE}${path}`;
   const res = await axios.get(url, {
     headers: { Accept: "application/json" },
@@ -42,6 +42,22 @@ async function tonapiGet(path: string, params: Record<string, string | number> =
     timeout: 15000,
   });
   return res.data;
+}
+
+const SPAM_PATTERNS = [
+  /voucher/i, /airdrop/i, /\bwon\b/i, /выиграли/i, /выиграл/i,
+  /spindog/i, /blum/i, /tontake/i, /tonbig/i, /toncash/i,
+  /\$x\b/i, /\bham\b/i, /bonus/i,
+  /https?:\/\//i, /www\./i,
+  /[^\x00-\x7F]{3,}/,
+];
+
+function isSpamNFT(item: any): boolean {
+  const name: string = item.metadata?.name ?? item.dns ?? "";
+  const hasCollection = !!(item.collection?.address);
+  if (!hasCollection && SPAM_PATTERNS.some(p => p.test(name))) return true;
+  if (!hasCollection && /^\s*0x?[0-9a-fA-F]{40,}\s*$/.test(name)) return true;
+  return false;
 }
 
 function classifyNFT(item: any): "username" | "number" | "domain" | "other" {
@@ -64,8 +80,7 @@ function formatNFTLabel(item: any, type: "username" | "number" | "domain" | "oth
     const name = dns.endsWith(".t.me") ? dns.slice(0, -4) : dns;
     return "@" + name.replace(/^@/, "");
   }
-  if (type === "number") return dns || item.metadata?.name || item.address;
-  if (type === "domain") return dns || item.metadata?.name || item.address;
+  if (type === "number" || type === "domain") return dns || item.metadata?.name || item.address;
   return item.metadata?.name || item.address;
 }
 
@@ -84,7 +99,7 @@ export async function getWalletAssets(walletAddress: string): Promise<WalletAsse
     while (true) {
       const data = await tonapiGet(
         `/accounts/${encodeURIComponent(walletAddress)}/nfts`,
-        { limit, offset, indirect_ownership: "false" }
+        { limit, offset, indirect_ownership: false }
       );
       const items: any[] = data?.nft_items ?? [];
       allItems.push(...items);
@@ -97,20 +112,14 @@ export async function getWalletAssets(walletAddress: string): Promise<WalletAsse
   }
 
   const usernames: string[] = [];
-  const numbers: string[] = [];
-  const domains: string[] = [];
+  const numbers:   string[] = [];
+  const domains:   string[] = [];
   const otherNfts: NFTItem[] = [];
 
   for (const item of allItems) {
     const type = classifyNFT(item);
-    const label = formatNFTLabel(item, type);
-    if (type === "username") {
-      usernames.push(label);
-    } else if (type === "number") {
-      numbers.push(label);
-    } else if (type === "domain") {
-      domains.push(label);
-    } else {
+    if (type === "other") {
+      if (isSpamNFT(item)) continue;
       otherNfts.push({
         address: item.address ?? "",
         name: item.metadata?.name ?? "",
@@ -119,12 +128,25 @@ export async function getWalletAssets(walletAddress: string): Promise<WalletAsse
         owner: walletAddress,
         dns: item.dns ?? "",
       });
+    } else {
+      const label = formatNFTLabel(item, type);
+      if (type === "username") usernames.push(label);
+      else if (type === "number") numbers.push(label);
+      else if (type === "domain") domains.push(label);
     }
   }
 
   const assets: WalletAssets = { wallet: walletAddress, usernames, numbers, domains, otherNfts };
   walletCache.set(walletAddress, assets);
   return assets;
+}
+
+export function invalidateWalletCache(walletAddress: string) {
+  walletCache.delete(walletAddress);
+}
+
+export function invalidateLookupCache(key: string) {
+  lookupCache.delete(key);
 }
 
 async function resolveNFTByDNS(dnsName: string): Promise<{ nftAddress: string; ownerWallet: string } | null> {
