@@ -4,13 +4,34 @@ import {
   isTonAddress, isUsername, isNumber, isDomain,
   getWalletAssets, resolveUsername, resolveNumber, resolveDomain,
   invalidateWalletCache, invalidateLookupCache,
-  type WalletAssets,
+  checkFragment,
+  type WalletAssets, type FragmentInfo,
 } from "./ton";
 import { formatWalletAssets, formatNFTSearchResult, paginateFullList } from "./format";
 import { saveSession, getSession } from "./sessions";
 
 const TELEGRAM_TOKEN = process.env["TELEGRAM_BOT_TOKEN"] ?? "";
 const MAX_SHOWN = 20;
+
+function fragmentText(fi: FragmentInfo | null): string {
+  if (!fi) return "";
+  if (fi.listed && fi.priceTon != null) {
+    return `\n\n💎 Выставлен на Fragment за ${fi.priceTon} TON\n🔗 ${fi.url}`;
+  }
+  if (fi.listed) {
+    return `\n\n💎 Выставлен на продажу на Fragment\n🔗 ${fi.url}`;
+  }
+  if (fi.sold) {
+    return `\n\n✅ Был продан на Fragment (сейчас у владельца)\n🔗 ${fi.url}`;
+  }
+  return `\n\n🔍 Не найден на Fragment — юзернейм не является NFT\n🔗 ${fi.url}`;
+}
+
+function fragmentButton(fi: FragmentInfo | null): { text: string; url: string } | null {
+  if (!fi) return null;
+  if (fi.listed) return { text: `💎 Fragment — ${fi.priceTon ?? "?"} TON`, url: fi.url };
+  return { text: "🔍 Fragment", url: fi.url };
+}
 
 function tvWallet(addr: string) { return `https://tonviewer.com/${addr}`; }
 function tvNFT(addr: string)    { return `https://tonviewer.com/${addr}`; }
@@ -50,15 +71,21 @@ function lookupKeyboard(
   ownerWallet: string,
   nftAddress: string,
   assets: WalletAssets,
+  fi: FragmentInfo | null = null,
 ): InlineKeyboardMarkup {
   const rid = saveSession({ type, query, wallet: ownerWallet, nftAddress });
   const wid = saveSession({ type: "w", wallet: ownerWallet });
 
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
-  rows.push([
+
+  const firstRow: any[] = [
     { text: "🔄 Обновить", callback_data: `r:${rid}` },
     { text: "🌐 NFT",      url: tvNFT(nftAddress) },
-  ]);
+  ];
+  const fragBtn = fragmentButton(fi);
+  if (fragBtn) firstRow.push(fragBtn);
+  rows.push(firstRow);
+
   rows.push([
     { text: "💼 Кошелёк владельца", callback_data: `w:${wid}` },
     { text: "👁 Tonviewer",         url: tvWallet(ownerWallet) },
@@ -149,13 +176,22 @@ export function startBot() {
       if (isUsername(text)) {
         await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
-        const result = await resolveUsername(text);
-        if (!result) { await plain(chatId, `❌ Юзернейм ${text} не найден в TON.\n\nНе все Telegram-юзернеймы являются NFT — только те, что были проданы/выпущены на Fragment. @durov, например, не является Fragment NFT.`); return; }
         const clean = (text.startsWith("@") ? text.slice(1) : text).toLowerCase();
+        const [result, fi] = await Promise.all([
+          resolveUsername(text),
+          checkFragment("username", clean),
+        ]);
+        if (!result) {
+          await plain(chatId,
+            `❌ Юзернейм @${clean} не найден в TON — не является Fragment NFT.` +
+            fragmentText(fi),
+          );
+          return;
+        }
         await replyMD(
           chatId,
           formatNFTSearchResult("username", text, result.nftAddress, result.assets),
-          lookupKeyboard("u", clean, result.ownerWallet, result.nftAddress, result.assets),
+          lookupKeyboard("u", clean, result.ownerWallet, result.nftAddress, result.assets, fi),
         );
         return;
       }
@@ -163,13 +199,22 @@ export function startBot() {
       if (isNumber(text)) {
         await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
-        const result = await resolveNumber(text);
-        if (!result) { await plain(chatId, `❌ Номер ${text} не найден в TON.\n\nАнонимные номера +888 — это NFT на Fragment. Если номер не продавался там, он не будет найден.`); return; }
         const clean = text.replace(/\s/g, "");
+        const [result, fi] = await Promise.all([
+          resolveNumber(text),
+          checkFragment("number", clean),
+        ]);
+        if (!result) {
+          await plain(chatId,
+            `❌ Номер ${clean} не найден в TON.` +
+            fragmentText(fi),
+          );
+          return;
+        }
         await replyMD(
           chatId,
           formatNFTSearchResult("number", text, result.nftAddress, result.assets),
-          lookupKeyboard("n", clean, result.ownerWallet, result.nftAddress, result.assets),
+          lookupKeyboard("n", clean, result.ownerWallet, result.nftAddress, result.assets, fi),
         );
         return;
       }
@@ -177,13 +222,23 @@ export function startBot() {
       if (isDomain(text)) {
         await plain(chatId, `🔍 Резолвлю ${text}...`);
         await sendTyping(chatId);
-        const result = await resolveDomain(text);
-        if (!result) { await plain(chatId, `❌ Домен ${text} не найден в TON.\n\nДомен должен быть зарегистрирован в TON DNS. Возможно, он ещё не выпущен или введён с ошибкой.`); return; }
         const clean = text.toLowerCase().endsWith(".ton") ? text.toLowerCase() : `${text.toLowerCase()}.ton`;
+        const domainName = clean.replace(/\.ton$/, "");
+        const [result, fi] = await Promise.all([
+          resolveDomain(text),
+          checkFragment("domain", domainName),
+        ]);
+        if (!result) {
+          await plain(chatId,
+            `❌ Домен ${clean} не найден в TON DNS.` +
+            fragmentText(fi),
+          );
+          return;
+        }
         await replyMD(
           chatId,
           formatNFTSearchResult("domain", text, result.nftAddress, result.assets),
-          lookupKeyboard("d", clean, result.ownerWallet, result.nftAddress, result.assets),
+          lookupKeyboard("d", clean, result.ownerWallet, result.nftAddress, result.assets, fi),
         );
         return;
       }

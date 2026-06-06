@@ -2,7 +2,8 @@ import axios, { type AxiosError } from "axios";
 import { logger } from "../lib/logger";
 import { walletCache, lookupCache, type LookupResult } from "./cache";
 
-const TONAPI_BASE = "https://tonapi.io/v2";
+const TONAPI_BASE    = "https://tonapi.io/v2";
+const FRAGMENT_BASE  = "https://fragment.com/api";
 
 export interface NFTItem {
   address: string;
@@ -219,6 +220,55 @@ export async function resolveDomain(domain: string): Promise<LookupResult | null
     return result;
   } catch (e) {
     throw apiError("Ошибка поиска домена", e);
+  }
+}
+
+export interface FragmentInfo {
+  name: string;
+  listed: boolean;       // currently on sale
+  sold: boolean;         // was sold (has owner, not on sale)
+  priceTon?: number;     // current price in TON (if listed)
+  url: string;
+}
+
+export async function checkFragment(
+  type: "username" | "number" | "domain",
+  query: string,
+): Promise<FragmentInfo | null> {
+  try {
+    const clean = query.replace(/^@/, "").replace(/\.ton$/, "").replace(/\s/g, "");
+    const res = await axios.get(FRAGMENT_BASE, {
+      params: { method: "searchAuctions", query: clean, filter: "auction" },
+      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
+      timeout: 10000,
+    });
+    const auctions: any[] = res.data?.auctions ?? [];
+
+    const urlMap: Record<string, string> = {
+      username: `https://fragment.com/username/${clean}`,
+      number:   `https://fragment.com/number/${clean}`,
+      domain:   `https://fragment.com/domain/${clean}`,
+    };
+    const url = urlMap[type];
+
+    const normalize = (s: string) => s.toLowerCase().replace(/\s/g, "");
+    const match = auctions.find(a => normalize(a.name ?? "") === normalize(clean));
+
+    if (!match) {
+      return { name: clean, listed: false, sold: false, url };
+    }
+
+    const status: string = (match.status ?? "").toLowerCase();
+    const listed = status === "on_sale" || status === "sale";
+    const sold   = status === "sold" || status === "sale_end";
+    const priceTon: number | undefined = match.price
+      ? Math.round(Number(match.price) / 1e9 * 100) / 100
+      : undefined;
+
+    return { name: clean, listed, sold, priceTon, url };
+  } catch (e: any) {
+    logger.warn({ msg: e?.message }, "Fragment check failed (non-critical)");
+    return null;
   }
 }
 
