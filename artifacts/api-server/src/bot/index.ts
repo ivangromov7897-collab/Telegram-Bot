@@ -150,7 +150,7 @@ export function startBot() {
         await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
         const result = await resolveUsername(text);
-        if (!result) { await plain(chatId, `❌ Юзернейм ${text} не найден.`); return; }
+        if (!result) { await plain(chatId, `❌ Юзернейм ${text} не найден в TON.\n\nНе все Telegram-юзернеймы являются NFT — только те, что были проданы/выпущены на Fragment. @durov, например, не является Fragment NFT.`); return; }
         const clean = (text.startsWith("@") ? text.slice(1) : text).toLowerCase();
         await replyMD(
           chatId,
@@ -164,7 +164,7 @@ export function startBot() {
         await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
         const result = await resolveNumber(text);
-        if (!result) { await plain(chatId, `❌ Номер ${text} не найден.`); return; }
+        if (!result) { await plain(chatId, `❌ Номер ${text} не найден в TON.\n\nАнонимные номера +888 — это NFT на Fragment. Если номер не продавался там, он не будет найден.`); return; }
         const clean = text.replace(/\s/g, "");
         await replyMD(
           chatId,
@@ -178,7 +178,7 @@ export function startBot() {
         await plain(chatId, `🔍 Резолвлю ${text}...`);
         await sendTyping(chatId);
         const result = await resolveDomain(text);
-        if (!result) { await plain(chatId, `❌ Домен ${text} не найден.`); return; }
+        if (!result) { await plain(chatId, `❌ Домен ${text} не найден в TON.\n\nДомен должен быть зарегистрирован в TON DNS. Возможно, он ещё не выпущен или введён с ошибкой.`); return; }
         const clean = text.toLowerCase().endsWith(".ton") ? text.toLowerCase() : `${text.toLowerCase()}.ton`;
         await replyMD(
           chatId,
