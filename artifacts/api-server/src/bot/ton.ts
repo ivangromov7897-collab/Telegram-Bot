@@ -146,12 +146,12 @@ async function resolveNFTByDNS(dnsName: string): Promise<{ nftAddress: string; o
   try {
     const encoded = encodeURIComponent(dnsName);
     const data = await tonapiGet(`/dns/${encoded}`);
-    const nftAddress: string = data?.wallet?.address ?? data?.address ?? "";
-    if (!nftAddress) return null;
+    const item = data?.item;
+    if (!item) return null;
 
-    const nftData = await tonapiGet(`/nfts/${encodeURIComponent(nftAddress)}`);
-    const ownerWallet: string = nftData?.owner?.address ?? "";
-    if (!ownerWallet) return null;
+    const nftAddress: string = item.address ?? "";
+    const ownerWallet: string = item.owner?.address ?? "";
+    if (!nftAddress || !ownerWallet) return null;
 
     return { nftAddress, ownerWallet };
   } catch (e: any) {
