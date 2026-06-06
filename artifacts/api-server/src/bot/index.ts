@@ -15,22 +15,32 @@ const MAX_SHOWN = 20;
 
 function fragmentText(fi: FragmentInfo | null): string {
   if (!fi) return "";
-  if (fi.listed && fi.priceTon != null) {
-    return `\n\n💎 Выставлен на Fragment за ${fi.priceTon} TON\n🔗 ${fi.url}`;
+  const price = fi.priceTon != null ? ` — мин. ставка ${fi.priceTon} TON` : "";
+  switch (fi.status) {
+    case "on_auction":
+      return `\n\n🔨 Идёт аукцион на Fragment${price}\n🔗 ${fi.url}`;
+    case "on_sale":
+      return `\n\n💎 Продаётся на Fragment${fi.priceTon != null ? ` за ${fi.priceTon} TON` : ""}\n🔗 ${fi.url}`;
+    case "sold":
+      return `\n\n✅ Был продан на Fragment (сейчас у владельца)\n🔗 ${fi.url}`;
+    case "not_found":
+    default:
+      return `\n\n🔍 Не найден на Fragment — не является NFT`;
   }
-  if (fi.listed) {
-    return `\n\n💎 Выставлен на продажу на Fragment\n🔗 ${fi.url}`;
-  }
-  if (fi.sold) {
-    return `\n\n✅ Был продан на Fragment (сейчас у владельца)\n🔗 ${fi.url}`;
-  }
-  return `\n\n🔍 Не найден на Fragment — юзернейм не является NFT\n🔗 ${fi.url}`;
 }
 
 function fragmentButton(fi: FragmentInfo | null): { text: string; url: string } | null {
   if (!fi) return null;
-  if (fi.listed) return { text: `💎 Fragment — ${fi.priceTon ?? "?"} TON`, url: fi.url };
-  return { text: "🔍 Fragment", url: fi.url };
+  switch (fi.status) {
+    case "on_auction":
+      return { text: `🔨 Аукцион${fi.priceTon != null ? ` — ${fi.priceTon} TON` : ""}`, url: fi.url };
+    case "on_sale":
+      return { text: `💎 Fragment${fi.priceTon != null ? ` — ${fi.priceTon} TON` : ""}`, url: fi.url };
+    case "sold":
+      return { text: "✅ Fragment (продан)", url: fi.url };
+    default:
+      return null;
+  }
 }
 
 function tvWallet(addr: string) { return `https://tonviewer.com/${addr}`; }

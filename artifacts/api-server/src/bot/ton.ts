@@ -223,12 +223,26 @@ export async function resolveDomain(domain: string): Promise<LookupResult | null
   }
 }
 
+export type FragmentStatus =
+  | "on_sale"     // buy now (fixed price)
+  | "on_auction"  // active auction (bidding)
+  | "sold"        // already sold, has owner
+  | "not_found";  // no trace on Fragment
+
 export interface FragmentInfo {
   name: string;
-  listed: boolean;       // currently on sale
-  sold: boolean;         // was sold (has owner, not on sale)
-  priceTon?: number;     // current price in TON (if listed)
+  status: FragmentStatus;
+  priceTon?: number;     // current price / min bid in TON
   url: string;
+}
+
+async function fragmentSearch(query: string, filter: string): Promise<any[]> {
+  const res = await axios.get(FRAGMENT_BASE, {
+    params: { method: "searchAuctions", query, filter },
+    headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
+    timeout: 10000,
+  });
+  return res.data?.auctions ?? [];
 }
 
 export async function checkFragment(
@@ -237,12 +251,6 @@ export async function checkFragment(
 ): Promise<FragmentInfo | null> {
   try {
     const clean = query.replace(/^@/, "").replace(/\.ton$/, "").replace(/\s/g, "");
-    const res = await axios.get(FRAGMENT_BASE, {
-      params: { method: "searchAuctions", query: clean, filter: "auction" },
-      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
-      timeout: 10000,
-    });
-    const auctions: any[] = res.data?.auctions ?? [];
 
     const urlMap: Record<string, string> = {
       username: `https://fragment.com/username/${clean}`,
@@ -252,20 +260,33 @@ export async function checkFragment(
     const url = urlMap[type];
 
     const normalize = (s: string) => s.toLowerCase().replace(/\s/g, "");
-    const match = auctions.find(a => normalize(a.name ?? "") === normalize(clean));
+    const isMatch   = (a: any) => normalize(a.name ?? "") === normalize(clean);
 
-    if (!match) {
-      return { name: clean, listed: false, sold: false, url };
+    // Query all relevant filters in parallel
+    const [auctionItems, saleItems, soldItems] = await Promise.all([
+      fragmentSearch(clean, "auction").catch(() => [] as any[]),
+      fragmentSearch(clean, "sale").catch(() => [] as any[]),
+      fragmentSearch(clean, "sold").catch(() => [] as any[]),
+    ]);
+
+    const auctionMatch = auctionItems.find(isMatch);
+    const saleMatch    = saleItems.find(isMatch);
+    const soldMatch    = soldItems.find(isMatch);
+
+    const toTon = (raw: any): number | undefined =>
+      raw ? Math.round(Number(raw) / 1e9 * 100) / 100 : undefined;
+
+    if (auctionMatch) {
+      return { name: clean, status: "on_auction", priceTon: toTon(auctionMatch.price), url };
+    }
+    if (saleMatch) {
+      return { name: clean, status: "on_sale", priceTon: toTon(saleMatch.price), url };
+    }
+    if (soldMatch) {
+      return { name: clean, status: "sold", priceTon: toTon(soldMatch.price), url };
     }
 
-    const status: string = (match.status ?? "").toLowerCase();
-    const listed = status === "on_sale" || status === "sale";
-    const sold   = status === "sold" || status === "sale_end";
-    const priceTon: number | undefined = match.price
-      ? Math.round(Number(match.price) / 1e9 * 100) / 100
-      : undefined;
-
-    return { name: clean, listed, sold, priceTon, url };
+    return { name: clean, status: "not_found", url };
   } catch (e: any) {
     logger.warn({ msg: e?.message }, "Fragment check failed (non-critical)");
     return null;
