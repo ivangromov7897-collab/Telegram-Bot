@@ -1,4 +1,7 @@
-export type SessionType = "w" | "u" | "n" | "d" | "fl";
+import type { WatchType } from "./watches";
+import type { FragmentStatus } from "./ton";
+
+export type SessionType = "w" | "u" | "n" | "d" | "fl" | "watch" | "unwatch";
 
 export interface Session {
   type: SessionType;
@@ -7,6 +10,11 @@ export interface Session {
   nftAddress?: string;
   listTitle?: string;
   listItems?: string[];
+  watchType?: WatchType;
+  watchQuery?: string;
+  displayLabel?: string;
+  fragmentStatus?: FragmentStatus;
+  minBidTon?: number;
 }
 
 const store = new Map<string, Session>();

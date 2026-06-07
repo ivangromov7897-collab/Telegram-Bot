@@ -9,6 +9,10 @@ import {
 } from "./ton";
 import { formatWalletAssets, formatNFTSearchResult, paginateFullList } from "./format";
 import { saveSession, getSession } from "./sessions";
+import {
+  addWatch, removeWatch, getUserWatches, startWatcher,
+  type WatchType,
+} from "./watches";
 
 const TELEGRAM_TOKEN = process.env["TELEGRAM_BOT_TOKEN"] ?? "";
 const MAX_SHOWN = 20;
@@ -24,7 +28,6 @@ function fragmentText(fi: FragmentInfo | null): string {
       const price = fi.minBidTon != null ? ` за ${fi.minBidTon} TON` : "";
       return `\n\n💎 Продаётся на Fragment${price}\n🔗 ${fi.url}`;
     }
-    case "not_found":
     default:
       return `\n\n🔍 Не найден на Fragment — не является NFT`;
   }
@@ -99,8 +102,47 @@ function lookupKeyboard(
     { text: "💼 Кошелёк владельца", callback_data: `w:${wid}` },
     { text: "👁 Tonviewer",         url: tvWallet(ownerWallet) },
   ]);
+
+  if (fi?.status === "on_auction") {
+    const wType: WatchType = type === "u" ? "username" : type === "n" ? "number" : "domain";
+    const displayLabel = wType === "username" ? `@${query}` : query;
+    const sid = saveSession({
+      type: "watch",
+      watchType: wType,
+      watchQuery: query,
+      displayLabel,
+      fragmentStatus: fi.status,
+      minBidTon: fi.minBidTon,
+    });
+    rows.push([{ text: "🔔 Следить за аукционом", callback_data: `watch:${sid}` }]);
+  }
+
   const extras = extraListButtons(ownerWallet, assets);
   for (let i = 0; i < extras.length; i += 2) rows.push(extras.slice(i, i + 2));
+  return { inline_keyboard: rows };
+}
+
+function auctionNotFoundKeyboard(
+  wType: WatchType,
+  query: string,
+  displayLabel: string,
+  fi: FragmentInfo,
+): InlineKeyboardMarkup {
+  const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
+  const fragBtn = fragmentButton(fi);
+  const row1: any[] = [];
+  if (fragBtn) row1.push(fragBtn);
+
+  const sid = saveSession({
+    type: "watch",
+    watchType: wType,
+    watchQuery: query,
+    displayLabel,
+    fragmentStatus: fi.status,
+    minBidTon: fi.minBidTon,
+  });
+  row1.push({ text: "🔔 Следить", callback_data: `watch:${sid}` });
+  rows.push(row1);
   return { inline_keyboard: rows };
 }
 
@@ -112,6 +154,7 @@ export function startBot() {
 
   const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
   logger.info("Telegram bot started (polling)");
+  startWatcher(bot);
 
   async function sendTyping(chatId: number | string) {
     try { await bot.sendChatAction(chatId, "typing"); } catch {}
@@ -139,8 +182,11 @@ export function startBot() {
     }
   }
 
-  async function plain(chatId: number | string, text: string) {
-    await bot.sendMessage(chatId, text, { disable_web_page_preview: true });
+  async function plain(chatId: number | string, text: string, kb?: InlineKeyboardMarkup) {
+    await bot.sendMessage(chatId, text, {
+      disable_web_page_preview: true,
+      ...(kb ? { reply_markup: kb } : {}),
+    });
   }
 
   bot.onText(/\/start/, async (msg) => {
@@ -150,7 +196,8 @@ export function startBot() {
       "• EQ... / UQ... — адрес кошелька\n" +
       "• @username — юзернейм\n" +
       "• +888... — анонимный номер\n" +
-      "• example.ton — домен TON",
+      "• example.ton — домен TON\n\n" +
+      "📡 /watches — мои активные подписки на аукционы",
     );
   });
 
@@ -163,8 +210,35 @@ export function startBot() {
       "🔹 example.ton — домен\n\n" +
       "⚡ Кэш: кошелёк 5 мин, поиск 10 мин.\n" +
       "🔄 «Обновить» — сброс кэша и свежие данные.\n" +
-      "📋 «Все юзернеймы/номера/домены» — полный список (если > 20).",
+      "📋 «Все юзернеймы/номера/домены» — полный список (если > 20).\n" +
+      "🔔 «Следить» — уведомление об окончании аукциона.\n" +
+      "📡 /watches — список активных подписок.",
     );
+  });
+
+  bot.onText(/\/watches/, async (msg) => {
+    const chatId = msg.chat.id;
+    const watches = getUserWatches(chatId);
+    if (watches.length === 0) {
+      await plain(chatId, "📭 У тебя нет активных подписок на аукционы.\n\nНайди юзернейм/номер/домен с активным аукционом и нажми 🔔 Следить.");
+      return;
+    }
+
+    const rows: InlineKeyboardMarkup["inline_keyboard"] = [];
+    const lines = ["📡 *Активные подписки:*\n"];
+    watches.forEach((w, i) => {
+      const typeIcon = w.type === "username" ? "👤" : w.type === "number" ? "📞" : "🌐";
+      const bid = w.lastMinBid != null ? ` — мин. ставка ${w.lastMinBid} TON` : "";
+      lines.push(`${i + 1}. ${typeIcon} ${w.displayLabel}${bid}`);
+      const sid = saveSession({ type: "unwatch", watchType: w.type, watchQuery: w.query, displayLabel: w.displayLabel });
+      rows.push([{ text: `❌ ${w.displayLabel}`, callback_data: `unwatch:${sid}` }]);
+    });
+
+    await bot.sendMessage(chatId, lines.join("\n"), {
+      parse_mode: "Markdown",
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: rows },
+    });
   });
 
   bot.on("message", async (msg) => {
@@ -191,10 +265,11 @@ export function startBot() {
           checkFragment("username", clean),
         ]);
         if (!result) {
-          await plain(chatId,
-            `❌ Юзернейм @${clean} не найден в TON — не является Fragment NFT.` +
-            fragmentText(fi),
-          );
+          const msg2 = `❌ Юзернейм @${clean} не найден в TON — не является Fragment NFT.` + fragmentText(fi);
+          const kb = fi?.status === "on_auction"
+            ? auctionNotFoundKeyboard("username", clean, `@${clean}`, fi)
+            : undefined;
+          await plain(chatId, msg2, kb);
           return;
         }
         await replyMD(
@@ -214,10 +289,11 @@ export function startBot() {
           checkFragment("number", clean),
         ]);
         if (!result) {
-          await plain(chatId,
-            `❌ Номер ${clean} не найден в TON.` +
-            fragmentText(fi),
-          );
+          const msg2 = `❌ Номер ${clean} не найден в TON.` + fragmentText(fi);
+          const kb = fi?.status === "on_auction"
+            ? auctionNotFoundKeyboard("number", clean, clean, fi)
+            : undefined;
+          await plain(chatId, msg2, kb);
           return;
         }
         await replyMD(
@@ -238,10 +314,11 @@ export function startBot() {
           checkFragment("domain", domainName),
         ]);
         if (!result) {
-          await plain(chatId,
-            `❌ Домен ${clean} не найден в TON DNS.` +
-            fragmentText(fi),
-          );
+          const msg2 = `❌ Домен ${clean} не найден в TON DNS.` + fragmentText(fi);
+          const kb = fi?.status === "on_auction"
+            ? auctionNotFoundKeyboard("domain", clean, clean, fi)
+            : undefined;
+          await plain(chatId, msg2, kb);
           return;
         }
         await replyMD(
@@ -270,9 +347,9 @@ export function startBot() {
     if (!chatId || !msgId) return;
 
     try {
-      const colon   = data.indexOf(":");
-      const action  = data.slice(0, colon);
-      const sid     = data.slice(colon + 1);
+      const colon  = data.indexOf(":");
+      const action = data.slice(0, colon);
+      const sid    = data.slice(colon + 1);
       const session = getSession(sid);
 
       if (!session) {
@@ -280,7 +357,34 @@ export function startBot() {
         return;
       }
 
-      // Show full list in separate messages
+      if (action === "watch") {
+        const { watchType, watchQuery, displayLabel, fragmentStatus, minBidTon } = session;
+        if (!watchType || !watchQuery || !displayLabel || !fragmentStatus) return;
+        const added = addWatch(chatId, watchType, watchQuery, displayLabel, fragmentStatus, minBidTon);
+        if (added) {
+          const bid = minBidTon != null ? ` (мин. ставка: ${minBidTon} TON)` : "";
+          await plain(chatId,
+            `🔔 Подписка оформлена!\n\nБуду следить за аукционом ${displayLabel}${bid}.\n` +
+            `Уведомлю когда:\n• Аукцион завершится\n• Изменится минимальная ставка\n\n` +
+            `📡 /watches — управление подписками`
+          );
+        } else {
+          await plain(chatId, `ℹ️ Ты уже следишь за ${displayLabel}.`);
+        }
+        return;
+      }
+
+      if (action === "unwatch") {
+        const { watchType, watchQuery, displayLabel } = session;
+        if (!watchType || !watchQuery || !displayLabel) return;
+        const removed = removeWatch(chatId, watchType, watchQuery);
+        await plain(chatId, removed
+          ? `✅ Подписка на ${displayLabel} отменена.`
+          : `ℹ️ Подписка не найдена.`
+        );
+        return;
+      }
+
       if (action === "f") {
         await sendTyping(chatId);
         const pages = paginateFullList(
@@ -292,7 +396,6 @@ export function startBot() {
         return;
       }
 
-      // Open wallet as NEW message (not edit)
       if (action === "w") {
         await sendTyping(chatId);
         const assets = await getWalletAssets(session.wallet!);
@@ -300,7 +403,6 @@ export function startBot() {
         return;
       }
 
-      // Refresh (edit current message)
       if (action === "r") {
         await sendTyping(chatId);
         const { type, wallet, query, nftAddress } = session;
@@ -308,21 +410,18 @@ export function startBot() {
         if (type === "w") {
           invalidateWalletCache(wallet!);
           const assets = await getWalletAssets(wallet!);
-          await editMD(chatId, msgId,
-            formatWalletAssets(assets, "Активы кошелька"),
-            walletKeyboard(wallet!, assets),
-          );
+          await editMD(chatId, msgId, formatWalletAssets(assets, "Активы кошелька"), walletKeyboard(wallet!, assets));
           return;
         }
 
         if (type === "u") {
           invalidateLookupCache(`username:${query}`);
           invalidateWalletCache(wallet!);
-          const result = await resolveUsername(query!);
-          if (!result) { await plain(chatId, "❌ Юзернейм не найден."); return; }
+          const [result, fi] = await Promise.all([resolveUsername(query!), checkFragment("username", query!)]);
+          if (!result) { await plain(chatId, "❌ Юзернейм не найден." + fragmentText(fi)); return; }
           await editMD(chatId, msgId,
             formatNFTSearchResult("username", `@${query}`, result.nftAddress, result.assets),
-            lookupKeyboard("u", query!, result.ownerWallet, result.nftAddress, result.assets),
+            lookupKeyboard("u", query!, result.ownerWallet, result.nftAddress, result.assets, fi),
           );
           return;
         }
@@ -330,11 +429,11 @@ export function startBot() {
         if (type === "n") {
           invalidateLookupCache(`number:${query}`);
           invalidateWalletCache(wallet!);
-          const result = await resolveNumber(query!);
-          if (!result) { await plain(chatId, "❌ Номер не найден."); return; }
+          const [result, fi] = await Promise.all([resolveNumber(query!), checkFragment("number", query!)]);
+          if (!result) { await plain(chatId, "❌ Номер не найден." + fragmentText(fi)); return; }
           await editMD(chatId, msgId,
             formatNFTSearchResult("number", query!, result.nftAddress, result.assets),
-            lookupKeyboard("n", query!, result.ownerWallet, result.nftAddress, result.assets),
+            lookupKeyboard("n", query!, result.ownerWallet, result.nftAddress, result.assets, fi),
           );
           return;
         }
@@ -342,11 +441,12 @@ export function startBot() {
         if (type === "d") {
           invalidateLookupCache(`domain:${query}`);
           invalidateWalletCache(wallet!);
-          const result = await resolveDomain(query!);
-          if (!result) { await plain(chatId, "❌ Домен не найден."); return; }
+          const domainName = (query ?? "").replace(/\.ton$/, "");
+          const [result, fi] = await Promise.all([resolveDomain(query!), checkFragment("domain", domainName)]);
+          if (!result) { await plain(chatId, "❌ Домен не найден." + fragmentText(fi)); return; }
           await editMD(chatId, msgId,
             formatNFTSearchResult("domain", query!, result.nftAddress, result.assets),
-            lookupKeyboard("d", query!, result.ownerWallet, result.nftAddress, result.assets),
+            lookupKeyboard("d", query!, result.ownerWallet, result.nftAddress, result.assets, fi),
           );
           return;
         }
