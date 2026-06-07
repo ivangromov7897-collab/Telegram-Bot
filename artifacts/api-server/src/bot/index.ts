@@ -13,8 +13,12 @@ import {
   addWatch, removeWatch, getUserWatches, startWatcher,
   type WatchType,
 } from "./watches";
+import {
+  trackUser, trackQuery, getStats, getRecentUsers, getRecentQueries, getAllUsers,
+} from "./activity";
 
-const TELEGRAM_TOKEN = process.env["TELEGRAM_BOT_TOKEN"] ?? "";
+const TELEGRAM_TOKEN  = process.env["TELEGRAM_BOT_TOKEN"] ?? "";
+const ADMIN_CHAT_ID   = process.env["ADMIN_CHAT_ID"] ?? "";
 const MAX_SHOWN = 20;
 
 function fragmentText(fi: FragmentInfo | null): string {
@@ -189,7 +193,22 @@ export function startBot() {
     });
   }
 
+  async function notifyAdmin(text: string) {
+    if (!ADMIN_CHAT_ID) return;
+    try { await bot.sendMessage(ADMIN_CHAT_ID, text, { disable_web_page_preview: true }); } catch {}
+  }
+
+  function userTag(from: { id: number; username?: string; first_name?: string }) {
+    const name = from.username ? `@${from.username}` : from.first_name ?? "—";
+    return `${name} (id: ${from.id})`;
+  }
+
   bot.onText(/\/start/, async (msg) => {
+    const from = msg.from;
+    if (from) {
+      const { isNew } = trackUser(from);
+      if (isNew) await notifyAdmin(`👤 Новый пользователь: ${userTag(from)}`);
+    }
     await plain(msg.chat.id,
       "👋 Привет! Я анализирую TON кошельки и NFT активы.\n\n" +
       "Отправь мне:\n" +
@@ -199,6 +218,84 @@ export function startBot() {
       "• example.ton — домен TON\n\n" +
       "📡 /watches — мои активные подписки на аукционы",
     );
+  });
+
+  bot.onText(/\/myid/, async (msg) => {
+    const id = msg.chat.id;
+    await plain(id, `🆔 Твой Chat ID: ${id}`);
+  });
+
+  bot.onText(/\/admin/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (ADMIN_CHAT_ID && String(chatId) !== String(ADMIN_CHAT_ID)) {
+      await plain(chatId, "⛔ Нет доступа.");
+      return;
+    }
+
+    const stats = getStats();
+    const recentUsers = getRecentUsers(10);
+    const recentQ     = getRecentQueries(15);
+
+    const typeIcons: Record<string, string> = {
+      wallet: "💼", username: "👤", number: "📞", domain: "🌐", other: "❓",
+    };
+
+    const lines: string[] = [
+      `📊 *Статистика бота*\n`,
+      `👥 Всего пользователей: *${stats.totalUsers}*`,
+      `🟢 Активных сегодня: *${stats.activeToday}*`,
+      `🔍 Запросов в памяти: *${stats.totalQueries}*`,
+      ``,
+      `*По типам запросов:*`,
+      ...Object.entries(stats.byType).map(([t, n]) => `  ${typeIcons[t] ?? "•"} ${t}: ${n}`),
+      ``,
+      `*Последние пользователи:*`,
+    ];
+
+    for (const u of recentUsers) {
+      const name = u.username ? `@${u.username}` : u.firstName ?? "—";
+      const ago  = Math.round((Date.now() - u.lastSeen) / 60000);
+      lines.push(`  • ${name} (id: ${u.id}) — ${ago} мин. назад, ${u.queryCount} запр.`);
+    }
+
+    lines.push(``, `*Последние запросы:*`);
+    for (const q of recentQ) {
+      const name = q.username ? `@${q.username}` : q.firstName ?? "—";
+      const ago  = Math.round((Date.now() - q.ts) / 60000);
+      lines.push(`  ${typeIcons[q.type] ?? "•"} ${name}: \`${q.text.slice(0, 40)}\` (${ago} мин.)`);
+    }
+
+    await bot.sendMessage(chatId, lines.join("\n"), {
+      parse_mode: "Markdown",
+      disable_web_page_preview: true,
+    });
+  });
+
+  bot.onText(/\/users/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (ADMIN_CHAT_ID && String(chatId) !== String(ADMIN_CHAT_ID)) {
+      await plain(chatId, "⛔ Нет доступа.");
+      return;
+    }
+    const all = getAllUsers();
+    if (all.length === 0) { await plain(chatId, "Пользователей пока нет."); return; }
+
+    const lines = [`👥 *Все пользователи (${all.length}):*\n`];
+    for (const u of all) {
+      const name    = u.username ? `@${u.username}` : (u.firstName ?? "—");
+      const date    = new Date(u.firstSeen).toLocaleDateString("ru-RU");
+      lines.push(`• ${name} (id: ${u.id}) — с ${date}, запросов: ${u.queryCount}`);
+    }
+
+    const chunks: string[][] = [[]];
+    for (const l of lines) {
+      const last = chunks[chunks.length - 1];
+      if (last.join("\n").length + l.length > 3800) chunks.push([]);
+      chunks[chunks.length - 1].push(l);
+    }
+    for (const chunk of chunks) {
+      await bot.sendMessage(chatId, chunk.join("\n"), { parse_mode: "Markdown", disable_web_page_preview: true });
+    }
   });
 
   bot.onText(/\/help/, async (msg) => {
@@ -245,10 +342,18 @@ export function startBot() {
     const chatId = msg.chat.id;
     const text = (msg.text ?? "").trim();
     if (!text || text.startsWith("/")) return;
+
+    // Track user + notify admin on first visit
+    if (msg.from) {
+      const { isNew } = trackUser(msg.from);
+      if (isNew) await notifyAdmin(`👤 Новый пользователь: ${userTag(msg.from)}\nЗапрос: ${text.slice(0, 60)}`);
+    }
+
     await sendTyping(chatId);
 
     try {
       if (isTonAddress(text)) {
+        if (msg.from) trackQuery(msg.from, text, "wallet");
         await plain(chatId, "🔍 Анализирую кошелёк...");
         await sendTyping(chatId);
         const assets = await getWalletAssets(text);
@@ -257,6 +362,7 @@ export function startBot() {
       }
 
       if (isUsername(text)) {
+        if (msg.from) trackQuery(msg.from, text, "username");
         await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
         const clean = (text.startsWith("@") ? text.slice(1) : text).toLowerCase();
@@ -281,6 +387,7 @@ export function startBot() {
       }
 
       if (isNumber(text)) {
+        if (msg.from) trackQuery(msg.from, text, "number");
         await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
         const clean = text.replace(/\s/g, "");
@@ -305,6 +412,7 @@ export function startBot() {
       }
 
       if (isDomain(text)) {
+        if (msg.from) trackQuery(msg.from, text, "domain");
         await plain(chatId, `🔍 Резолвлю ${text}...`);
         await sendTyping(chatId);
         const clean = text.toLowerCase().endsWith(".ton") ? text.toLowerCase() : `${text.toLowerCase()}.ton`;
