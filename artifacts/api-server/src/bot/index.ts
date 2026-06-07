@@ -15,7 +15,10 @@ import {
 } from "./watches";
 import {
   trackUser, trackQuery, getStats, getRecentUsers, getRecentQueries, getAllUsers,
+  initDb,
 } from "./activity";
+
+export { initDb };
 
 const TELEGRAM_TOKEN  = process.env["TELEGRAM_BOT_TOKEN"] ?? "";
 const ADMIN_CHAT_ID   = process.env["ADMIN_CHAT_ID"] ?? "";
@@ -206,7 +209,7 @@ export function startBot() {
   bot.onText(/\/start/, async (msg) => {
     const from = msg.from;
     if (from) {
-      const { isNew } = trackUser(from);
+      const { isNew } = await trackUser(from);
       if (isNew) await notifyAdmin(`👤 Новый пользователь: ${userTag(from)}`);
     }
     await plain(msg.chat.id,
@@ -232,9 +235,11 @@ export function startBot() {
       return;
     }
 
-    const stats = getStats();
-    const recentUsers = getRecentUsers(10);
-    const recentQ     = getRecentQueries(15);
+    const [stats, recentUsers, recentQ] = await Promise.all([
+      getStats(),
+      getRecentUsers(10),
+      getRecentQueries(15),
+    ]);
 
     const typeIcons: Record<string, string> = {
       wallet: "💼", username: "👤", number: "📞", domain: "🌐", other: "❓",
@@ -277,7 +282,7 @@ export function startBot() {
       await plain(chatId, "⛔ Нет доступа.");
       return;
     }
-    const all = getAllUsers();
+    const all = await getAllUsers();
     if (all.length === 0) { await plain(chatId, "Пользователей пока нет."); return; }
 
     const lines = [`👥 *Все пользователи (${all.length}):*\n`];
@@ -345,7 +350,7 @@ export function startBot() {
 
     // Track user + notify admin on first visit
     if (msg.from) {
-      const { isNew } = trackUser(msg.from);
+      const { isNew } = await trackUser(msg.from);
       if (isNew) await notifyAdmin(`👤 Новый пользователь: ${userTag(msg.from)}\nЗапрос: ${text.slice(0, 60)}`);
     }
 
@@ -353,7 +358,7 @@ export function startBot() {
 
     try {
       if (isTonAddress(text)) {
-        if (msg.from) trackQuery(msg.from, text, "wallet");
+        if (msg.from) await trackQuery(msg.from, text, "wallet");
         await plain(chatId, "🔍 Анализирую кошелёк...");
         await sendTyping(chatId);
         const assets = await getWalletAssets(text);
@@ -362,7 +367,7 @@ export function startBot() {
       }
 
       if (isUsername(text)) {
-        if (msg.from) trackQuery(msg.from, text, "username");
+        if (msg.from) await trackQuery(msg.from, text, "username");
         await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
         const clean = (text.startsWith("@") ? text.slice(1) : text).toLowerCase();
@@ -387,7 +392,7 @@ export function startBot() {
       }
 
       if (isNumber(text)) {
-        if (msg.from) trackQuery(msg.from, text, "number");
+        if (msg.from) await trackQuery(msg.from, text, "number");
         await plain(chatId, `🔍 Ищу ${text}...`);
         await sendTyping(chatId);
         const clean = text.replace(/\s/g, "");
@@ -412,7 +417,7 @@ export function startBot() {
       }
 
       if (isDomain(text)) {
-        if (msg.from) trackQuery(msg.from, text, "domain");
+        if (msg.from) await trackQuery(msg.from, text, "domain");
         await plain(chatId, `🔍 Резолвлю ${text}...`);
         await sendTyping(chatId);
         const clean = text.toLowerCase().endsWith(".ton") ? text.toLowerCase() : `${text.toLowerCase()}.ton`;
