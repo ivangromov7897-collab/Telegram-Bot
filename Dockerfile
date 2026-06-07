@@ -3,7 +3,7 @@ WORKDIR /app
 
 RUN corepack enable && corepack prepare pnpm@10 --activate
 
-COPY package.json pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY lib/ ./lib/
 COPY artifacts/api-server/ ./artifacts/api-server/
 
